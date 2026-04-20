@@ -68,4 +68,31 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Apply HERMES_MODEL env var to config.yaml. The Telegram/Discord gateway
+# reads model.default from config.yaml only (see gateway/run.py
+# _resolve_gateway_model), so HERMES_MODEL must be propagated here for
+# the env var to take effect for messaging gateways.
+if [ -n "$HERMES_MODEL" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
+    python3 - <<PYEOF
+import os, re, sys
+path = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
+target = os.environ["HERMES_MODEL"]
+with open(path) as f:
+    text = f.read()
+new_text, n = re.subn(
+    r'(^[ \t]*default:[ \t]*)"[^"]*"',
+    lambda m: f'{m.group(1)}"{target}"',
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+if n == 0:
+    sys.exit(0)
+if new_text != text:
+    with open(path, "w") as f:
+        f.write(new_text)
+    print(f"entrypoint: updated config.yaml model.default -> {target}")
+PYEOF
+fi
+
 exec hermes "$@"
