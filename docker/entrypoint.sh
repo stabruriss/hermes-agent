@@ -73,25 +73,29 @@ fi
 # _resolve_gateway_model), so HERMES_MODEL must be propagated here for
 # the env var to take effect for messaging gateways.
 if [ -n "$HERMES_MODEL" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
-    python3 - <<PYEOF
-import os, re, sys
+    python3 - <<'PYEOF'
+import os, sys
+try:
+    import yaml
+except Exception as e:
+    print(f"entrypoint: yaml unavailable ({e}); skipping HERMES_MODEL apply")
+    sys.exit(0)
 path = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
 target = os.environ["HERMES_MODEL"]
 with open(path) as f:
-    text = f.read()
-new_text, n = re.subn(
-    r'(^[ \t]*default:[ \t]*)"[^"]*"',
-    lambda m: f'{m.group(1)}"{target}"',
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if n == 0:
-    sys.exit(0)
-if new_text != text:
-    with open(path, "w") as f:
-        f.write(new_text)
-    print(f"entrypoint: updated config.yaml model.default -> {target}")
+    cfg = yaml.safe_load(f) or {}
+m = cfg.get("model")
+if isinstance(m, str):
+    cfg["model"] = {"default": target}
+elif isinstance(m, dict):
+    if m.get("default") == target:
+        sys.exit(0)
+    m["default"] = target
+else:
+    cfg["model"] = {"default": target}
+with open(path, "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+print(f"entrypoint: updated config.yaml model.default -> {target}")
 PYEOF
 fi
 
