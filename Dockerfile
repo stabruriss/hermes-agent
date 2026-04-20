@@ -48,6 +48,9 @@ RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
 # ---------- Runtime ----------
+# Start as root so entrypoint.sh can chown volume mounts before gosu-dropping
+# to the hermes user. Required for Railway-style managed volume mounts.
+USER root
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
