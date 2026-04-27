@@ -23,6 +23,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_IMAGE_TYPES,
     SUPPORTED_VIDEO_TYPES,
 )
 
@@ -145,6 +146,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
     )
 
 
@@ -387,6 +391,126 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+
+class TestImageDocumentHandling:
+    """PNG/JPG/WebP/GIF uploaded as Telegram 'document' (i.e. unchecked
+    'send as file' in TG) should be routed to the image cache like native
+    photos, NOT rejected as 'unsupported document type'."""
+
+    @pytest.mark.asyncio
+    async def test_png_document_is_treated_as_image(self, adapter):
+        file_obj = _make_file_obj(b"\x89PNG\r\n\x1a\nfake-png-bytes")
+        doc = _make_document(
+            file_name="screenshot.png", mime_type="image/png",
+            file_size=128, file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/img.png"):
+            await adapter._handle_media_message(update, MagicMock())
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/img.png"]
+        assert event.media_types == ["image/png"]
+        # Make sure we didn't rejection-message the user
+        assert "Unsupported" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_jpeg_document_is_treated_as_image(self, adapter):
+        file_obj = _make_file_obj(b"\xff\xd8\xff\xe0fake-jpeg")
+        doc = _make_document(
+            file_name="photo.jpeg", mime_type="image/jpeg",
+            file_size=64, file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/img.jpeg"):
+            await adapter._handle_media_message(update, MagicMock())
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_webp_document_is_treated_as_image(self, adapter):
+        file_obj = _make_file_obj(b"RIFFfake-webp")
+        doc = _make_document(
+            file_name="sticker.webp", mime_type="image/webp",
+            file_size=64, file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/img.webp"):
+            await adapter._handle_media_message(update, MagicMock())
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/webp"]
+
+    @pytest.mark.asyncio
+    async def test_image_doc_resolved_via_mime_when_filename_missing(self, adapter):
+        """No filename, MIME alone should resolve png extension."""
+        file_obj = _make_file_obj(b"fake-png")
+        doc = _make_document(
+            file_name=None, mime_type="image/png",
+            file_size=64, file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/img.png"):
+            await adapter._handle_media_message(update, MagicMock())
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_image_doc_rejected(self, adapter):
+        doc = _make_document(
+            file_name="huge.png", mime_type="image/png",
+            file_size=25 * 1024 * 1024,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert "too large" in event.text
+
+    @pytest.mark.asyncio
+    async def test_image_doc_album_buffered_with_other_photos(self, adapter):
+        """A PNG-as-document and a native photo in the same media group
+        should be buffered together in one event."""
+        photo_file = _make_file_obj(b"native-photo")
+        png_file = _make_file_obj(b"\x89PNGfake")
+        png_doc = _make_document(
+            file_name="img.png", mime_type="image/png",
+            file_size=64, file_obj=png_file,
+        )
+        msg1 = _make_message(caption="mixed album", media_group_id="mix-1", photo=[_make_photo(photo_file)])
+        msg2 = _make_message(media_group_id="mix-1", document=png_doc)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/native.jpg", "/tmp/png-doc.png"]):
+            await adapter._handle_media_message(_make_update(msg1), MagicMock())
+            await adapter._handle_media_message(_make_update(msg2), MagicMock())
+            assert adapter.handle_message.await_count == 0
+            await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.media_urls == ["/tmp/native.jpg", "/tmp/png-doc.png"]
+        assert len(event.media_types) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -569,6 +569,14 @@ SUPPORTED_VIDEO_TYPES = {
     ".avi": "video/x-msvideo",
 }
 
+SUPPORTED_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
 
 def get_video_cache_dir() -> Path:
     """Return the video cache directory, creating it if it doesn't exist."""

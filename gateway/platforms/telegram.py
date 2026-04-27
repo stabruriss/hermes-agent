@@ -76,6 +76,7 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_IMAGE_TYPES,
     utf16_len,
     _prefix_within_utf16_limit,
 )
@@ -2674,6 +2675,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     video_mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
                     ext = video_mime_to_ext.get(doc.mime_type, "")
 
+                if not ext and doc.mime_type:
+                    image_mime_to_ext = {v: k for k, v in SUPPORTED_IMAGE_TYPES.items()}
+                    ext = image_mime_to_ext.get(doc.mime_type.lower(), "")
+
                 if ext in SUPPORTED_VIDEO_TYPES:
                     file_obj = await doc.get_file()
                     video_bytes = await file_obj.download_as_bytearray()
@@ -2683,6 +2688,36 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
                     await self.handle_message(event)
+                    return
+
+                # Image documents (PNG/JPG/WebP/GIF uploaded "as file" rather
+                # than "as photo") — route through the image cache so the
+                # vision tool can see them, just like native photos.
+                if ext in SUPPORTED_IMAGE_TYPES:
+                    MAX_IMAGE_DOC_BYTES = 20 * 1024 * 1024
+                    if not doc.file_size or doc.file_size > MAX_IMAGE_DOC_BYTES:
+                        event.text = (
+                            "The image is too large or its size could not be verified. "
+                            "Maximum: 20 MB."
+                        )
+                        logger.info("[Telegram] Image document too large: %s bytes", doc.file_size)
+                        await self.handle_message(event)
+                        return
+
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_IMAGE_TYPES[ext]]
+                    event.message_type = MessageType.PHOTO
+                    logger.info("[Telegram] Cached user image document at %s", cached_path)
+
+                    media_group_id = getattr(msg, "media_group_id", None)
+                    if media_group_id:
+                        await self._queue_media_group_event(str(media_group_id), event)
+                    else:
+                        batch_key = self._photo_batch_key(event, msg)
+                        self._enqueue_photo_event(batch_key, event)
                     return
 
                 # Check if supported
