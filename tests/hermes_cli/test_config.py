@@ -319,6 +319,37 @@ class TestSanitizeEnvLines:
         assert result[0].startswith("OPENROUTER_API_KEY=")
         assert result[1].startswith("OPENAI_BASE_URL=")
 
+    def test_repairs_first_char_chopped_openrouter(self):
+        """A name with the leading character missing (PENROUTER_API_KEY)
+        gets restored to OPENROUTER_API_KEY when there is a unique match."""
+        lines = ["PENROUTER_API_KEY=sk-or-xxx\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["OPENROUTER_API_KEY=sk-or-xxx\n"]
+
+    def test_repairs_first_char_chopped_tavily(self):
+        lines = ["AVILY_API_KEY=tvly-dev-abc\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["TAVILY_API_KEY=tvly-dev-abc\n"]
+
+    def test_repair_preserves_empty_value(self):
+        """Repair works even when value is empty (the user's actual case)."""
+        lines = ["PENROUTER_API_KEY=\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["OPENROUTER_API_KEY=\n"]
+
+    def test_repair_does_not_touch_unknown_unique_typo(self):
+        """If the truncated name doesn't uniquely match exactly one known
+        key (1 char shorter, same suffix), leave it alone."""
+        lines = ["TOTALLY_RANDOM_VAR=x\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["TOTALLY_RANDOM_VAR=x\n"]
+
+    def test_repair_does_not_corrupt_known_key(self):
+        """A correctly-named known key passes through unchanged."""
+        lines = ["OPENROUTER_API_KEY=sk-or-xxx\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["OPENROUTER_API_KEY=sk-or-xxx\n"]
+
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"

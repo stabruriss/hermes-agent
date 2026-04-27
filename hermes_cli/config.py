@@ -3101,13 +3101,38 @@ def load_env() -> Dict[str, str]:
     return env_vars
 
 
+def _repair_truncated_env_key(line: str, known_keys: set) -> str:
+    """Restore a missing first character on a known-key name.
+
+    Some input paths drop the leading character of a key name (e.g. a
+    web form or terminal prompt swallowing the first keystroke), leaving
+    entries like ``PENROUTER_API_KEY=...`` or ``AVILY_API_KEY=tvly-...``
+    which Hermes silently ignores because the name doesn't match any
+    known var. If the truncated name is a unique 1-char-shorter suffix
+    of exactly one known key, restore the missing character.
+    """
+    if "=" not in line:
+        return line
+    key_part, sep, value_part = line.partition("=")
+    name = key_part.strip()
+    if not name or name in known_keys:
+        return line
+    candidates = [k for k in known_keys if len(k) == len(name) + 1 and k.endswith(name)]
+    if len(candidates) == 1:
+        return f"{candidates[0]}{sep}{value_part}"
+    return line
+
+
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
-    Handles two known corruption patterns:
+    Handles three known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
        entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
     2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+    3. Key names with the first character chopped off (e.g.
+       ``PENROUTER_API_KEY=`` → ``OPENROUTER_API_KEY=``) — see
+       ``_repair_truncated_env_key``.
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
     split on real Hermes env var names, avoiding false positives from values
@@ -3145,9 +3170,9 @@ def _sanitize_env_lines(lines: list) -> list:
                 end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
                 part = stripped[pos:end].strip()
                 if part:
-                    sanitized.append(part + "\n")
+                    sanitized.append(_repair_truncated_env_key(part, known_keys) + "\n")
         else:
-            sanitized.append(stripped + "\n")
+            sanitized.append(_repair_truncated_env_key(stripped, known_keys) + "\n")
 
     return sanitized
 

@@ -51,6 +51,36 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "project-key"
 
 
+def test_empty_user_env_value_does_not_clobber_runtime_value(tmp_path, monkeypatch):
+    """An empty placeholder in .env (e.g. left over from .env.example)
+    must not wipe out a non-empty value injected by the runtime
+    (Railway, Docker --env, systemd EnvironmentFile)."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("OPENAI_API_KEY=\n", encoding="utf-8")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-runtime-key")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("OPENAI_API_KEY") == "sk-real-runtime-key"
+
+
+def test_empty_user_env_value_kept_when_runtime_unset(tmp_path, monkeypatch):
+    """An empty value in .env still applies if no runtime value is set."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("SOME_FRESH_KEY_FOR_TEST=\n", encoding="utf-8")
+
+    monkeypatch.delenv("SOME_FRESH_KEY_FOR_TEST", raising=False)
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("SOME_FRESH_KEY_FOR_TEST") == ""
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

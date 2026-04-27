@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -33,9 +33,23 @@ def _sanitize_loaded_credentials() -> None:
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        values = dotenv_values(dotenv_path=path, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        values = dotenv_values(dotenv_path=path, encoding="latin-1")
+
+    for key, value in values.items():
+        if value is None:
+            continue
+        existing = os.environ.get(key)
+        # Empty .env values never clobber a non-empty existing env var:
+        # they're typically stale .env.example placeholders that would
+        # silently invalidate secrets injected by the container runtime
+        # (Railway, Docker --env, systemd EnvironmentFile).
+        if value == "" and existing:
+            continue
+        if override or existing is None:
+            os.environ[key] = value
+
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars
