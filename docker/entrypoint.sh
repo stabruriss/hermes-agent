@@ -72,30 +72,70 @@ fi
 # reads model.default from config.yaml only (see gateway/run.py
 # _resolve_gateway_model), so HERMES_MODEL must be propagated here for
 # the env var to take effect for messaging gateways.
-if [ -n "$HERMES_MODEL" ] && [ -f "$HERMES_HOME/config.yaml" ]; then
+# Sync env-var-driven config into config.yaml. The Telegram/Discord gateway
+# and the auxiliary vision client read these settings from config.yaml only,
+# so env vars must be projected here for the env var to take effect.
+#   HERMES_MODEL                -> model.default
+#   AUXILIARY_VISION_PROVIDER   -> auxiliary.vision.provider
+#   AUXILIARY_VISION_MODEL      -> auxiliary.vision.model
+#   AUXILIARY_VISION_TIMEOUT    -> auxiliary.vision.timeout (int seconds)
+if [ -f "$HERMES_HOME/config.yaml" ]; then
     python3 - <<'PYEOF'
 import os, sys
 try:
     import yaml
 except Exception as e:
-    print(f"entrypoint: yaml unavailable ({e}); skipping HERMES_MODEL apply")
+    print(f"entrypoint: yaml unavailable ({e}); skipping config sync")
     sys.exit(0)
+
 path = os.path.join(os.environ["HERMES_HOME"], "config.yaml")
-target = os.environ["HERMES_MODEL"]
 with open(path) as f:
     cfg = yaml.safe_load(f) or {}
-m = cfg.get("model")
-if isinstance(m, str):
-    cfg["model"] = {"default": target}
-elif isinstance(m, dict):
-    if m.get("default") == target:
-        sys.exit(0)
-    m["default"] = target
-else:
-    cfg["model"] = {"default": target}
-with open(path, "w") as f:
-    yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
-print(f"entrypoint: updated config.yaml model.default -> {target}")
+
+changed = []
+
+target_model = os.environ.get("HERMES_MODEL", "").strip()
+if target_model:
+    m = cfg.get("model")
+    if isinstance(m, str) or m is None:
+        cfg["model"] = {"default": target_model}
+        changed.append(f"model.default={target_model}")
+    elif isinstance(m, dict):
+        if m.get("default") != target_model:
+            m["default"] = target_model
+            changed.append(f"model.default={target_model}")
+
+vision_provider = os.environ.get("AUXILIARY_VISION_PROVIDER", "").strip()
+vision_model = os.environ.get("AUXILIARY_VISION_MODEL", "").strip()
+vision_timeout = os.environ.get("AUXILIARY_VISION_TIMEOUT", "").strip()
+if vision_provider or vision_model or vision_timeout:
+    aux = cfg.setdefault("auxiliary", {})
+    if not isinstance(aux, dict):
+        aux = {}
+        cfg["auxiliary"] = aux
+    vision = aux.setdefault("vision", {})
+    if not isinstance(vision, dict):
+        vision = {}
+        aux["vision"] = vision
+    if vision_provider and vision.get("provider") != vision_provider:
+        vision["provider"] = vision_provider
+        changed.append(f"auxiliary.vision.provider={vision_provider}")
+    if vision_model and vision.get("model") != vision_model:
+        vision["model"] = vision_model
+        changed.append(f"auxiliary.vision.model={vision_model}")
+    if vision_timeout:
+        try:
+            t = int(vision_timeout)
+            if vision.get("timeout") != t:
+                vision["timeout"] = t
+                changed.append(f"auxiliary.vision.timeout={t}")
+        except ValueError:
+            print(f"entrypoint: AUXILIARY_VISION_TIMEOUT={vision_timeout!r} is not an int; skipping")
+
+if changed:
+    with open(path, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+    print("entrypoint: synced env vars to config.yaml: " + ", ".join(changed))
 PYEOF
 fi
 
