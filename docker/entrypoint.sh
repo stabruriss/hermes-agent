@@ -68,14 +68,14 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
-# Apply HERMES_MODEL env var to config.yaml. The Telegram/Discord gateway
-# reads model.default from config.yaml only (see gateway/run.py
-# _resolve_gateway_model), so HERMES_MODEL must be propagated here for
-# the env var to take effect for messaging gateways.
 # Sync env-var-driven config into config.yaml. The Telegram/Discord gateway
 # and the auxiliary vision client read these settings from config.yaml only,
 # so env vars must be projected here for the env var to take effect.
 #   HERMES_MODEL                -> model.default
+#   HERMES_MODEL_CONTEXT_LENGTH -> model.context_length  (escape hatch when
+#                                  auto-detection picks the wrong window —
+#                                  e.g. a provider /models endpoint that
+#                                  returns the output-token limit instead)
 #   AUXILIARY_VISION_PROVIDER   -> auxiliary.vision.provider
 #   AUXILIARY_VISION_MODEL      -> auxiliary.vision.model
 #   AUXILIARY_VISION_TIMEOUT    -> auxiliary.vision.timeout (int seconds)
@@ -95,15 +95,26 @@ with open(path) as f:
 changed = []
 
 target_model = os.environ.get("HERMES_MODEL", "").strip()
-if target_model:
+target_ctx_raw = os.environ.get("HERMES_MODEL_CONTEXT_LENGTH", "").strip()
+target_ctx = None
+if target_ctx_raw:
+    try:
+        target_ctx = int(target_ctx_raw)
+    except ValueError:
+        print(f"entrypoint: HERMES_MODEL_CONTEXT_LENGTH={target_ctx_raw!r} is not an int; ignoring")
+
+if target_model or target_ctx is not None:
     m = cfg.get("model")
     if isinstance(m, str) or m is None:
-        cfg["model"] = {"default": target_model}
+        cfg["model"] = m = {"default": m} if isinstance(m, str) else {}
+    elif not isinstance(m, dict):
+        cfg["model"] = m = {}
+    if target_model and m.get("default") != target_model:
+        m["default"] = target_model
         changed.append(f"model.default={target_model}")
-    elif isinstance(m, dict):
-        if m.get("default") != target_model:
-            m["default"] = target_model
-            changed.append(f"model.default={target_model}")
+    if target_ctx is not None and m.get("context_length") != target_ctx:
+        m["context_length"] = target_ctx
+        changed.append(f"model.context_length={target_ctx}")
 
 vision_provider = os.environ.get("AUXILIARY_VISION_PROVIDER", "").strip()
 vision_model = os.environ.get("AUXILIARY_VISION_MODEL", "").strip()
@@ -137,6 +148,15 @@ if changed:
         yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
     print("entrypoint: synced env vars to config.yaml: " + ", ".join(changed))
 PYEOF
+fi
+
+# HERMES_FRESH_CONTEXT_CACHE=1 — clear the persistent context-length cache
+# at startup. Useful when a stale cached value (e.g. a probe-down to 32K
+# saved during an earlier failed run) keeps the agent below the 64K
+# minimum even after the underlying detection issue is fixed.
+if [ "$HERMES_FRESH_CONTEXT_CACHE" = "1" ] && [ -f "$HERMES_HOME/context_length_cache.yaml" ]; then
+    rm -f "$HERMES_HOME/context_length_cache.yaml"
+    echo "entrypoint: cleared context_length_cache.yaml (HERMES_FRESH_CONTEXT_CACHE=1)"
 fi
 
 exec hermes "$@"
