@@ -251,6 +251,29 @@ class TestBrowserVisionConfig:
         assert mock_llm.call_args.kwargs["temperature"] == 0.1
         assert mock_llm.call_args.kwargs["timeout"] == 120.0
 
+    def test_browser_vision_uses_reasoning_when_content_is_none(self, tmp_path):
+        from tools.browser_tool import browser_vision
+
+        shots_dir, screenshot = self._setup_screenshot(tmp_path)
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = None
+        mock_choice.message.reasoning = "Reasoning-only screenshot analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+            patch("tools.browser_tool._cleanup_old_screenshots"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True, "data": {"path": str(screenshot)}}),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch("tools.browser_tool.call_llm", return_value=mock_response),
+        ):
+            result = json.loads(browser_vision("what is on the page?", task_id="test"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Reasoning-only screenshot analysis"
+
 
 # ── auto-recording config ────────────────────────────────────────────
 

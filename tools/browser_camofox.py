@@ -535,7 +535,7 @@ def camofox_vision(question: str, annotate: bool = False,
         annotation_context = redact_sensitive_text(annotation_context)
 
         # Send to vision LLM
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
         vision_prompt = (
             f"Analyze this browser screenshot and answer: {question}"
@@ -569,7 +569,7 @@ def camofox_vision(question: str, annotate: bool = False,
             temperature=_vision_temperature,
             timeout=_vision_timeout,
         )
-        analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
+        analysis = extract_content_or_reasoning(response)
 
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
@@ -599,6 +599,5 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
 
 

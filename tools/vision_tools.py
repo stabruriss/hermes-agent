@@ -637,6 +637,26 @@ async def vision_analyze_tool(
                 f"API provider account and try again. Error: {e}"
             )
         elif any(hint in err_str for hint in (
+            "401", "403", "unauthorized", "forbidden",
+            "authentication token is expired", "token expired",
+            "expired token", "invalid token", "invalid api key",
+        )):
+            analysis = (
+                "Vision provider authentication failed or expired. Re-authenticate "
+                "the configured provider or switch auxiliary.vision to another "
+                f"provider. Error: {e}"
+            )
+        elif any(hint in err_str for hint in (
+            "llm returned none response", "llm returned invalid response",
+            "missing choices[0].message", "nonetype",
+        )):
+            analysis = (
+                "The vision provider returned an empty or invalid response. If "
+                "auxiliary.vision is set to auto, Hermes will try another provider "
+                "when one is available; otherwise switch or re-authenticate the "
+                f"configured vision provider. Error: {e}"
+            )
+        elif any(hint in err_str for hint in (
             "does not support", "not support image",
             "content_policy", "multimodal",
             "unrecognized request argument", "image input",

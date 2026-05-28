@@ -65,7 +65,7 @@ import time
 import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_home
 
 try:
@@ -2157,7 +2157,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             else:
                 raise
         
-        analysis = (response.choices[0].message.content or "").strip()
+        analysis = extract_content_or_reasoning(response)
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)

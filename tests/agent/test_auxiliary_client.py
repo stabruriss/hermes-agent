@@ -19,6 +19,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _is_auth_error,
     _try_payment_fallback,
     _resolve_auto,
 )
@@ -517,6 +518,26 @@ class TestIsPaymentError:
         assert _is_payment_error(exc) is False
 
 
+class TestIsAuthError:
+    """_is_auth_error detects expired/invalid credentials."""
+
+    def test_401_status_code(self):
+        exc = Exception("Unauthorized")
+        exc.status_code = 401
+        assert _is_auth_error(exc) is True
+
+    def test_expired_token_message(self):
+        exc = Exception(
+            "Provided authentication token is expired. Please try signing in again. (401)"
+        )
+        assert _is_auth_error(exc) is True
+
+    def test_regular_error_is_not_auth(self):
+        exc = Exception("Internal Server Error")
+        exc.status_code = 500
+        assert _is_auth_error(exc) is False
+
+
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
@@ -607,6 +628,72 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_vision_auto_auth_error_uses_fallback(self):
+        """Vision auto mode should not stop at an expired active provider token."""
+        primary_client = MagicMock()
+        auth_err = Exception(
+            "Provided authentication token is expired. Please try signing in again. (401)"
+        )
+        auth_err.status_code = 401
+        primary_client.chat.completions.create.side_effect = auth_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="fallback vision"))],
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("openai-codex", primary_client, "gpt-5.2-codex"),
+        ), patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(fallback_client, "google/gemini-3-flash-preview", "openrouter"),
+        ):
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert result.choices[0].message.content == "fallback vision"
+
+    @pytest.mark.asyncio
+    async def test_async_vision_auto_auth_error_uses_fallback(self):
+        """The async vision path used by vision_analyze should also fallback."""
+        primary_client = MagicMock()
+        auth_err = Exception("token expired (401)")
+        auth_err.status_code = 401
+        primary_client.chat.completions.create = AsyncMock(side_effect=auth_err)
+
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(
+            return_value=MagicMock(
+                choices=[MagicMock(message=MagicMock(content="async fallback vision"))],
+            )
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("openai-codex", primary_client, "gpt-5.2-codex"),
+        ), patch(
+            "agent.auxiliary_client._try_payment_fallback",
+            return_value=(MagicMock(), "google/gemini-3-flash-preview", "openrouter"),
+        ), patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(async_fallback_client, "google/gemini-3-flash-preview"),
+        ):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe image"}],
+            )
+
+        assert result.choices[0].message.content == "async fallback vision"
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured

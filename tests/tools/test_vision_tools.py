@@ -715,6 +715,57 @@ class TestErrorClassification:
         assert "rejected the image" in result["analysis"].lower()
         assert "smaller" in result["analysis"].lower()
 
+    @pytest.mark.asyncio
+    async def test_auth_error_gives_reauth_guidance(self, tmp_path):
+        """Expired provider tokens should produce actionable auth guidance."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        api_error = Exception(
+            "Provided authentication token is expired. Please try signing in again. (401)"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is False
+        assert "authentication failed or expired" in result["analysis"].lower()
+        assert "re-authenticate" in result["analysis"].lower()
+
+    @pytest.mark.asyncio
+    async def test_malformed_response_error_gives_provider_guidance(self, tmp_path):
+        """Null provider payloads should not surface as bare NoneType errors."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        api_error = Exception("'NoneType' object is not iterable")
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is False
+        assert "empty or invalid response" in result["analysis"].lower()
+
 
 class TestVisionRegistration:
     def test_vision_analyze_registered(self):

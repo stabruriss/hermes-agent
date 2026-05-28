@@ -1247,12 +1247,64 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """Detect authentication/authorization failures that can use fallback in auto mode."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status in (401, 403):
+        return True
+
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "authentication token is expired",
+        "token is expired",
+        "token expired",
+        "expired token",
+        "invalid token",
+        "unauthorized",
+        "authentication failed",
+        "invalid api key",
+        "invalid_api_key",
+        "forbidden",
+    ))
+
+
+def _is_malformed_llm_response_error(exc: Exception) -> bool:
+    """Detect invalid empty provider responses before they leak as TypeError."""
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "llm returned none response",
+        "llm returned invalid response",
+        "missing choices[0].message",
+        "nonetype' object is not iterable",
+        "'nonetype' object is not iterable",
+        "argument of type 'nonetype' is not iterable",
+        "'nonetype' is not iterable",
+        "nonetype object is not iterable",
+    ))
+
+
+def _fallback_reason(first_err: Exception) -> Optional[str]:
+    """Return a fallback reason for recoverable auxiliary failures."""
+    if _is_payment_error(first_err):
+        return "payment error"
+    if _is_connection_error(first_err):
+        return "connection error"
+    if _is_auth_error(first_err):
+        return "authentication error"
+    if _is_malformed_llm_response_error(first_err):
+        return "malformed response"
+    return None
+
+
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
     reason: str = "payment error",
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Try alternative providers after a payment/credit or connection error.
+    """Try alternative providers after a recoverable provider error.
 
     Iterates the standard auto-detection chain, skipping the provider that
     failed.
@@ -2542,6 +2594,7 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    requested_auto = resolved_provider in ("auto", "", None)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -2645,29 +2698,21 @@ def call_llm(
                     raise
                 first_err = retry_err
 
-        # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
-        #
-        # ── Connection error fallback ────────────────────────────────
-        # When a provider endpoint is unreachable (DNS failure, connection
-        # refused, timeout), try alternative providers.  This handles stale
-        # Codex/OAuth tokens that authenticate but whose endpoint is down,
-        # and providers the user never configured that got picked up by
-        # the auto-detection chain.
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        # ── Recoverable provider fallback ─────────────────────────────
+        # When the resolved provider returns a recoverable error (payment,
+        # auth expiry, connection failure, or malformed empty response), try
+        # alternative providers instead of giving up. This handles the common
+        # case where a user runs out of OpenRouter credits or an OAuth token
+        # expires but another provider is available.
+        fallback_reason = _fallback_reason(first_err)
         # Only try alternative providers when the user didn't explicitly
         # configure this task's provider.  Explicit provider = hard constraint;
         # auto (the default) = best-effort fallback chain.  (#7559)
-        is_auto = resolved_provider in ("auto", "", None)
-        if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+        if fallback_reason and requested_auto:
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
-                        task or "call", reason, resolved_provider, first_err)
+                        task or "call", fallback_reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                resolved_provider, task, reason=fallback_reason)
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
@@ -2697,8 +2742,15 @@ def extract_content_or_reasoning(response) -> str:
     """
     import re
 
-    msg = response.choices[0].message
-    content = (msg.content or "").strip()
+    try:
+        response = _validate_llm_response(response, "extract_content")
+        msg = response.choices[0].message
+    except Exception as exc:
+        logger.warning("Unable to extract LLM response content: %s", exc)
+        return ""
+
+    raw_content = getattr(msg, "content", None)
+    content = raw_content.strip() if isinstance(raw_content, str) else ""
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
@@ -2756,6 +2808,7 @@ async def async_call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    requested_auto = resolved_provider in ("auto", "", None)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -2843,15 +2896,13 @@ async def async_call_llm(
                     raise
                 first_err = retry_err
 
-        # ── Payment / connection fallback (mirrors sync call_llm) ─────
-        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        is_auto = resolved_provider in ("auto", "", None)
-        if should_fallback and is_auto:
-            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+        # ── Recoverable provider fallback (mirrors sync call_llm) ─────
+        fallback_reason = _fallback_reason(first_err)
+        if fallback_reason and requested_auto:
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
-                        task or "call", reason, resolved_provider, first_err)
+                        task or "call", fallback_reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task, reason=reason)
+                resolved_provider, task, reason=fallback_reason)
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,

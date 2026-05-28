@@ -239,6 +239,13 @@ class TestExtractContentOrReasoning:
         response = _make_response(None)
         assert extract_content_or_reasoning(response) == ""
 
+    def test_none_response_returns_empty(self):
+        assert extract_content_or_reasoning(None) == ""
+
+    def test_none_choices_returns_empty(self):
+        response = types.SimpleNamespace(choices=None)
+        assert extract_content_or_reasoning(response) == ""
+
     def test_empty_string_returns_empty(self):
         response = _make_response("")
         assert extract_content_or_reasoning(response) == ""
