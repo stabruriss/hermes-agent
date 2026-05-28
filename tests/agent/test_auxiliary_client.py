@@ -602,6 +602,36 @@ class TestTryPaymentFallback:
         assert label == "openai-codex"
 
 
+class TestVisionCodexAuto:
+    """Codex OAuth credentials should make vision tools available in auto mode."""
+
+    def test_available_vision_backends_includes_codex_oauth(self):
+        mock_codex = MagicMock()
+        with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
+             patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(mock_codex, "gpt-5.2-codex")):
+            backends = get_available_vision_backends()
+
+        assert backends == ["openai-codex"]
+
+    def test_resolve_vision_auto_uses_codex_when_aggregators_unavailable(self):
+        mock_codex = MagicMock()
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
+             patch("agent.auxiliary_client._read_main_model", return_value=""), \
+             patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(mock_codex, "gpt-5.2-codex")):
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "openai-codex"
+        assert client is mock_codex
+        assert model == "gpt-5.2-codex"
+
+
 class TestCallLlmPaymentFallback:
     """call_llm() retries with a different provider on 402 / payment errors."""
 

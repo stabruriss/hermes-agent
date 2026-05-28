@@ -1904,6 +1904,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "openai-codex",
 )
 
 
@@ -1933,7 +1934,7 @@ def _strict_vision_backend_available(provider: str) -> bool:
 def get_available_vision_backends() -> List[str]:
     """Return the currently available vision backends in auto-selection order.
 
-    Order: active provider → OpenRouter → Nous → stop.  This is the single
+    Order: active provider → OpenRouter → Nous → Codex OAuth → stop.  This is the single
     source of truth for setup, tool gating, and runtime auto-routing of
     vision tasks.
     """
@@ -1948,7 +1949,7 @@ def get_available_vision_backends() -> List[str]:
             client, _ = resolve_provider_client(main_provider, _read_main_model())
             if client is not None:
                 available.append(main_provider)
-    # 2. OpenRouter, 3. Nous — skip if already covered by main provider.
+    # 2. OpenRouter, 3. Nous, 4. Codex OAuth — skip if already covered by main provider.
     for p in _VISION_AUTO_PROVIDER_ORDER:
         if p not in available and _strict_vision_backend_available(p):
             available.append(p)
@@ -2006,7 +2007,8 @@ def resolve_vision_provider_client(
         #      zai → glm-5v-turbo).
         #   2. OpenRouter  (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
-        #   4. Stop
+        #   4. Codex OAuth (vision-capable Responses API fallback)
+        #   5. Stop
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
